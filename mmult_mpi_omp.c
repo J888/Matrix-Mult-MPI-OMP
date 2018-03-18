@@ -58,15 +58,6 @@ int main(int argc, char* argv[])
         double aa[arows][acols],bb[brows][bcols],cc1[nrows][ncols], cc2[nrows][ncols];
 
 
-        //fscanf(fileA, "%*[^\n]\n"); //skip line 1
-        /*for (i = 0; i < acols; i++){
-            for (j = 0; j < arows; j++){
-                if (!fscanf(fileA, "%lf", &aa[i][j])) break;
-            }
-        }	
-        rewind(fileA);
-	*/
-
 	for(i = 0; i < arows; i++){
 		for(k = 0; k<acols; k++) {
 			fscanf(fileA, "%lf", &aa[i][k]);
@@ -106,16 +97,16 @@ int main(int argc, char* argv[])
 	    int averow = nrows/numworkers;
 	    extra = nrows %numworkers;
  
-	/*
+	
             for (dest=1; dest<=min(numworkers, nrows); dest++){
-                //rows = (dest <= extra) ? averow+1 : averow;
-	        MPI_Send(&offset, 1, MPI_INT, dest, 1, MPI_COMM_WORLD);
+                rows = (dest <= extra) ? averow+1 : averow;
+	              MPI_Send(&offset, 1, MPI_INT, dest, 1, MPI_COMM_WORLD);//send the 
                 MPI_Send(&rows, 1, MPI_INT, dest, 1, MPI_COMM_WORLD);
                 MPI_Send(&aa[offset][0], rows*nrows, MPI_DOUBLE, dest, 1, MPI_COMM_WORLD);
                 MPI_Send(&bb, brows*bcols, MPI_DOUBLE, dest, 1, MPI_COMM_WORLD);
                 offset = offset + rows;
-  	//      	totalrows -= rows;    
-	} 
+  	          	totalrows -= rows;    
+	         } 
 
             for (i=1; i<=min(numworkers, nrows); i++){
                 source = i;
@@ -123,69 +114,6 @@ int main(int argc, char* argv[])
                 MPI_Recv(&rows, 1, MPI_INT, source, 2, MPI_COMM_WORLD, &status);
                 MPI_Recv(&cc1[offset][0], rows*nrows, MPI_DOUBLE, source, 2, MPI_COMM_WORLD, &status);
             }
-
-
-	*/
-
-nt numsent = 0;
-
-ouble buffer[acols];
-/send all nodes a copy of bb
-PI_Bcast(bb, brows*bcols, MPI_DOUBLE, master, MPI_COMM_WORLD);
-
-hich_row_to_send=0;
-
-* fill the buffer with a row of aa*/
-or (j = 0; j < acols; j++) {
- buffer[j] = aa[which_row_to_send][j]; 
-
-
-       /* send to node*/
-       MPI_Send(buffer, ncols, MPI_DOUBLE, which_row_to_send+1, which_row_to_send+1, MPI_COMM_WORLD);
-       numsent++;
-
-* for all rows in aa*/
-or (i = 0; i < nrows; i++) {
-
-       /*receive an answer from any node */
-       MPI_Recv(&ans, ncols, MPI_DOUBLE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-
-       sender = status.MPI_SOURCE; //get which node sent the answer
-       anstype = status.MPI_TAG;   //get the position in the resulting matrix
-
-    	/* put the answer into cc1 */
-       for(int x = 0; x < ncols; x++) {    
-       	cc1[anstype][sender-1] = ans[x];
-       }
-
-       if (numsent < nrows) { // if there are still rows left to fill
-
-       	for (j = 0; j < acols; j++) { 
-       		buffer[j] = aa[which_row_to_send+1][j]; //put next row of aa in buffer
-       	}
-
-       	// send the buffer back to the sender
-               MPI_Send(buffer, ncols, MPI_DOUBLE, sender, numsent+1 , MPI_COMM_WORLD);
-               numsent++;
-
-       } 
-       else 
-       {
-       	/* if numsent exceeds number of rows, send nothing back */
-         MPI_Send(MPI_BOTTOM, 0, MPI_DOUBLE, sender, 0, MPI_COMM_WORLD);
-
-       }
-
-
-
-
-
-
-
-
-
-
-
 
             endtime = MPI_Wtime();
 
@@ -234,7 +162,6 @@ or (i = 0; i < nrows; i++) {
         { //SLAVE CODE
      
 
-/*
 	  if(nrows>=myid){
             source = 0;
             MPI_Recv(&offset, 1, MPI_INT, source, 1, MPI_COMM_WORLD, &status);
@@ -253,64 +180,13 @@ or (i = 0; i < nrows; i++) {
                         }
                     }
                 }
-                printf("Multiplication from worker %d complete!\n", myid);
+
                 MPI_Send(&offset, 1, MPI_INT, 0, 2, MPI_COMM_WORLD);
                 MPI_Send(&rows, 1, MPI_INT, 0, 2, MPI_COMM_WORLD);
                 MPI_Send(&cc1, rows*ncols, MPI_DOUBLE, 0, 2, MPI_COMM_WORLD);
            
         }
- */ 
-
-
-
-
-
-
- 		MPI_Bcast(bb, ncols, MPI_DOUBLE, master, MPI_COMM_WORLD);
-
-	    if (myid <= nrows) { //if node is needed for work
-
-	        while(1) { // in a loop
-
-	        	//receive the buffer from the master	
-	        MPI_Recv(buffer, ncols, MPI_DOUBLE, master, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-
-	        if (status.MPI_TAG == 0) { // if the master sent 0, break
-	            	break;
-	        }
-
-	        row = status.MPI_TAG; // get which row from master, always the next one to work on
-	            
-	      /*
-#pragma omp parallel default(none) 
-#pragma omp shared(ans) for reduction(+:ans)*/
-int x;	           
-#pragma omp parallel default(none)  \
-    shared(ans, buffer, acols, ncols, row, bb) private(x, j)
-#pragma omp for  
-		 for(x = 0; x < ncols; x++) {
-	            	/* do the multiplying*/
-		            for(int j = 0; j < acols; j++) {
-		            	ans[x] = buffer[j] *  bb[row][j];
-		            }
-
-	            }
-			
-		}
-		//send back the answer which is ncols long to master and which row
-	        MPI_Send(&ans, ncols, MPI_DOUBLE, master, row, MPI_COMM_WORLD);
-	    }
-
-
-
-
-
-
-
- 
       }
-
-
     }
     else
     {

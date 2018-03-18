@@ -1,187 +1,177 @@
+#include "matrix.h"
 #include "mpi.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <sys/times.h>
 #define min(x, y) ((x)<(y)?(x):(y))
 
+//void fill_matrix(int n, int m, FILE *fp, double **matrix);
+//int mmult(double **c, double **a, int aRows, int aCols, double **b, int bRows, int bCols);
+//void compare_matrix(double **a, double **b, int nRows, int nCols);
+
 /** 
-	John Hyland - CIS 3238 - Lab 5 
+  Program to multiply a matrix times a matrix using both
+  mpi to distribute the computation among nodes and omp
+  to distribute the computation among threads.
+  */
 
-    Program to multiply a matrix times a vector using both
-    mpi to distribute the computation among nodes and omp
-    to distribute the computation among threads.
-*/
+int main(int argc, char* argv[])
+{
+    double *aa;	/* the A matrix */
+    double *bb;	/* the B matrix */
+    double *cc1;	/* A x B computed using the omp-mpi code you write */
+    double *cc2;	/* A x B computed using the conventional algorithm */
+    int myid, numprocs, nrows, ncols;
+    double starttime, endtime;
+    MPI_Status status;
+    /* insert other global variables here */ 
+    int i, j, k, rows, offset, dest, source, 
+        arows, acols, brows, bcols, numworkers,
+        totalrows;   
+    FILE *fileA;
+    FILE *fileB;
+    FILE *fileC;
 
-int main(int argc, char* argv[]) {
-  int nrows, ncols;
-  double *aa, *bb, *cc1, *cc2;
-  double *buffer, *ans;
-  double *times;
-  double total_times;
-  int run_index;
-  int nruns;
-  int myid, master, numprocs;
-  double starttime, endtime;
-  MPI_Status status;
-  int i, j, numsent, sender;
-  int anstype, row;
-  srand(time(0));
-  MPI_Init(&argc, &argv);
-  MPI_Comm_size(MPI_COMM_WORLD, &numprocs);
-  MPI_Comm_rank(MPI_COMM_WORLD, &myid);
-  if (argc > 1) {
-   
+    MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &numprocs);
+    MPI_Comm_rank(MPI_COMM_WORLD, &myid);
 
+    if (argc == 3){
+        fileA = fopen(argv[1], "r");
+        fileB = fopen(argv[2], "r");
+        arows = getRows(fileA);
+        acols = getCols(fileA);
+        brows = getRows(fileB);
+        bcols = getCols(fileB);
+        if (acols == brows){
+            nrows = arows;
+            ncols = bcols;
+        } else {
+            fprintf(stderr, "These 2 matrices cannot be multiplied.\n");
+            return 0;
+        }
 
-    //read FIRST file
-    FILE * fp;
-    fp = fopen(argv[1], "r");
-    fscanf(fp, "%d", &aRows);
-    fscanf(fp, "%d", &aCols);
-    printf("%d, %d", aRows, aCols);
+        aa = malloc(sizeof(double) * arows * acols);
+        bb = malloc(sizeof(double) * brows * bcols);
+        gen_matrix(aa, arows, acols, fileA);
+        gen_matrix(bb, brows, bcols, fileB);
+        cc1 = malloc(sizeof(double) * nrows * ncols);
+        double a[arows][acols];
+        double b[brows][bcols];
+        double c[nrows][ncols];
+        double c2[nrows][ncols];
 
-    //allocate and fill first matrix, row major orderingg
-    aa = malloc(sizeof(double)*aRows*aCols);
-    for(int i=0; i<aRows; i++){
-            for(int j =0; j<aCols; j++){
-                    fscanf(fp, "%lf", &aa[i*aCols+j]);
+        i = j = 0;
+        for (i = 0; i < arows; i++){
+            for (j = 0; j < acols; j++){
+                if (!fscanf(fileA, "%lf", &a[i][j])) break;
             }
-    }
+        }	
+        rewind(fileA);
 
-
-    //read SECOND file
-    fp = fopen(argv[2], "r");
-    fscanf(fp, "%d", &bRows);
-    fscanf(fp, "%d", &bCols);
-    printf("%d, %d", bRows, bCols);
-
-    //allocate and fill second matrix, row major orderingg
-    bb = malloc(sizeof(double)*bRows*bCols);
-    for(int i=0; i<bRows; i++){
-            for(int j =0; j<bCols; j++){
-                    fscanf(fp, "%lf", &bb[i*bCols+j]);
+        for (i = 0; i < brows; i++){
+            for (j = 0; j < bcols; j++){
+                if (!fscanf(fileB, "%lf", &b[i][j])) break;
             }
+        }	
+        rewind(fileB);
+
+        if (myid == 0) { 
+            starttime = MPI_Wtime();
+            offset = 0;
+            numworkers = numprocs-1;
+            rows = nrows/numworkers;
+            if (rows == 0) rows = 1;
+            int averow, extra;
+            averow = nrows/numworkers;
+            extra = nrows%numworkers;
+            for (dest=1; dest<=min(numworkers, nrows); dest++){
+                rows = (dest <= extra) ? averow+1 : averow;
+                MPI_Send(&offset, 1, MPI_INT, dest, 1, MPI_COMM_WORLD);
+                MPI_Send(&rows, 1, MPI_INT, dest, 1, MPI_COMM_WORLD);
+                MPI_Send(&a[offset][0], rows*nrows, MPI_DOUBLE, dest, 1, MPI_COMM_WORLD);
+                MPI_Send(&b, brows*bcols, MPI_DOUBLE, dest, 1, MPI_COMM_WORLD);
+                offset = offset + rows;
+                totalrows -= rows;
+            } 
+
+            for (i=1; i<=min(numworkers, nrows); i++){
+                source = i;
+                MPI_Recv(&offset, 1, MPI_INT, source, 2, MPI_COMM_WORLD, &status);
+                MPI_Recv(&rows, 1, MPI_INT, source, 2, MPI_COMM_WORLD, &status);
+
+                MPI_Recv(&c[offset][0], rows*nrows, MPI_DOUBLE, source, 2, MPI_COMM_WORLD, &status);
+            }
+            endtime = MPI_Wtime();
+            printf("%f\n", (endtime - starttime));
+            //      mmult(cc2, aa, arows, acols, bb, brows, bcols); 
+            for (i=0; i<nrows; i++){
+                for (j=0; j<ncols; j++){
+                    c2[i][j] = 0;
+                    for (k=0; k<nrows; k++){
+                        c2[i][j] += a[i][k] * b[k][j];
+                    }
+
+                }
+            }
+
+            int isSame = 1; 
+
+            for (i=0; i<nrows; i++){
+                for (j=0; j<ncols; j++){
+                    if (c[i][j] != c2[i][j]) isSame = 0;
+                    printf("c[%d][%d] = %lf c2[%d][%d] = %lf\n", i, j, c[i][j], i, j, c2[i][j]);
+                }
+            }
+            if (isSame){
+                printf("These matrices are the same.\n");
+            } else {
+                printf("These matrices are NOT the same.\n");
+            }
+
+            fileC = fopen("fileC", "w");
+            char space[] = " ";
+            char nline[] = "\n";
+            char s[20];
+            for (i=0; i<nrows; i++){
+                for (j=0; j<ncols; j++){
+                    sprintf(s, "%f", c[i][j]);
+                    fwrite(s, 1, sizeof(double), fileC);
+                    if (j != ncols-1) fwrite(space, 1, sizeof(char), fileC);
+                }
+                fwrite(nline, 1, sizeof(char), fileC); 
+            }
+            printf("MatrixC has been stored in file: fileC.\n");
+
+        }else {
+        // Slave Code goes here
+            if (nrows >= myid){
+                source = 0;
+                MPI_Recv(&offset, 1, MPI_INT, source, 1, MPI_COMM_WORLD, &status);
+                MPI_Recv(&rows, 1, MPI_INT, source, 1, MPI_COMM_WORLD, &status);	
+                MPI_Recv(&a, rows*nrows, MPI_DOUBLE, source, 1, MPI_COMM_WORLD, &status);
+                MPI_Recv(&b, brows*bcols, MPI_DOUBLE, source, 1, MPI_COMM_WORLD, &status);
+                //printf("all info recieved...\n");
+                for (k=0; k<ncols; k++){
+                    for (i=0; i<rows; i++){
+                        c[i][k] = 0; 
+                        for(j=0; j<brows; j++){
+                            c[i][k] += a[i][j] * b[j][k];
+                        }
+                    }
+                }
+                printf("Multiplication from worker %d complete!\n", myid);
+                MPI_Send(&offset, 1, MPI_INT, 0, 2, MPI_COMM_WORLD);
+                MPI_Send(&rows, 1, MPI_INT, 0, 2, MPI_COMM_WORLD);
+                MPI_Send(&c, rows*ncols, MPI_DOUBLE, 0, 2, MPI_COMM_WORLD);
+            }
+        }
+    } else {
+        fprintf(stderr, "Two files with MatrixA and MatrixB must be passed as arguments\n");
+        return 0;
     }
+    MPI_Finalize();
 
-    for(int x = 0; x < bRows*bCols; x++){
-            printf("element %d: %f\n",x+1, bb[x]);
-    }
-
-
-    //CHECK to see if matrices can be multipled. Exit if they cannot
-    if(aCols!=bRows){
-            printf("Dimension error. Matrices cannot be multipled. Exiting\n");
-            exit(0);
-    }
-
-
-    //set dimensions of cc1
-    ncols = bCols;
-    nrows = aRows;
-
-
-    cc1 = (double*)malloc(sizeof(double) * ncols * nrows)
-
-    master = 0;
-    if (myid == master) { //MASTER CODE
-
-		starttime = MPI_Wtime();
-		numsent = 0;
-
-		//send all nodes a copy of bb
-		MPI_Bcast(bb, bRows*bCols, MPI_DOUBLE, master, MPI_COMM_WORLD);
-
-      	/* fill the buffer with a row of aa*/
-        for (j = 0; j < aCols; j++) {
-          buffer[j] = aa[ aCols*which_row_to_send+ j]; 
-    	}
-
-		/* send to the node with id of current row + 1 */
-		MPI_Send(buffer, ncols, MPI_DOUBLE, which_row_to_send+1, which_row_to_send+1, MPI_COMM_WORLD);
-		numsent++;
-
-
-		/* for all rows in aa*/
-		for (i = 0; i < nrows; i++) {
-
-			/*receive an answer from any node */
-			MPI_Recv(&ans, ncols, MPI_DOUBLE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-
-	        sender = status.MPI_SOURCE; //get which node sent the answer
-	        anstype = status.MPI_TAG;   //get the position in the resulting matrix
-
-	     	/* put the answer into cc1 */
-	        for(int x = 0; x < ncols; x++) {    
-	        	cc1[ (anstype-1)*ncols + x] = ans[x];
-	        }
-
-			if (numsent < nrows) { // if there are still rows left to fill
-
-				for (j = 0; j < aCols; j++) { // for all columns of bb
-					buffer[j] = aa[aCols*numsent + j]; //put next row of aa in buffer
-				}
-
-	            // send the buffer back to the sender
-	            MPI_Send(buffer, ncols, MPI_DOUBLE, sender, numsent+1 /*tag it numsent + 1*/ , MPI_COMM_WORLD);
-	          	numsent++;
-
-	        } 
-	        else 
-	        {
-	        	/* if numsent exceeds number of rows, send nothing back */
-	          MPI_Send(MPI_BOTTOM, 0, MPI_DOUBLE, sender, 0, MPI_COMM_WORLD);
-
-	        }
-      }
-      endtime = MPI_Wtime();
-      printf("%f\n",(endtime - starttime));
-    } 
-    else 
-    { 
-	    //SLAVE CODE
-	    /* job: take a row of aa and use all of bb to find a row of cc */
-	      
-	    /*broadcast bb as the master */
-		MPI_Bcast(bb, ncols, MPI_DOUBLE, master, MPI_COMM_WORLD);
-
-	    if (myid <= nrows) { //if node is needed for work
-
-	        while(1) { // in a loop
-
-	        	//receive the buffer from the master	
-	        	MPI_Recv(buffer, ncols, MPI_DOUBLE, master, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-
-	            if (status.MPI_TAG == 0) { // if the master sent 0, break
-	            	break;
-	            }
-
-	            row = status.MPI_TAG; // get which row from master, always the next one to work on
-	            
-	            // re-initialize ans to 0(row to send back)
-	            for(int i = 0; i < ncols; i++) {
-	            	ans[i] = 0;
-	            }
-
-
-#pragma omp parallel default(none) 
-#pragma omp shared(ans) for reduction(+:ans)
-	            for(int x = 0; x < ncols; x++) {
-	            	/* do the multiplying*/
-		            for(int j = 0; j < aCols; j++) {
-		            	ans[x] = buffer[j] * /*all cols in b*/ bb[ x+(j*ncols) ];
-		            }
-
-	            }
-			
-			}
-
-	        MPI_Send(&ans, ncols, MPI_DOUBLE, master, row, MPI_COMM_WORLD);
-	    }
-    }
-  
-	else { fprintf(stderr, "Usage matrix_times_matrix <size>\n"); }
-
-	MPI_Finalize();
-	return 0;
+    return 0;
 }
-	                                                                                                                                                           102,1         Bot
